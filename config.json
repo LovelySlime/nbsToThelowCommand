@@ -1,3 +1,7 @@
 {
-    "minecraft:block.note_block.harp": "note.harp"
+    "minecraft:block.note_block.harp": "note.harp",
+    "minecraft:block.note_block.bell": {
+        "id": "random.orb",
+        "pitch_multiplier": 1.1892
+    }
 }

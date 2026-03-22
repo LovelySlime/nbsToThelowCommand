@@ -1,4 +1,3 @@
-
 import os
 import json
 
@@ -6,17 +5,14 @@ def main():
     # --- ユーザー設定（対話形式） ---
     print("--- 設定を入力してください（カッコ内はデフォルト値） ---")
 
-    # .mcfunctionファイルが格納されているディレクトリ
     default_notes_dir = os.path.join("data", "atari", "functions", "notes")
     notes_dir_input = input(f".mcfunctionファイルが格納されているディレクトリ [{default_notes_dir}]: ")
     notes_dir = notes_dir_input if notes_dir_input else default_notes_dir
 
-    # executeコマンドのセレクタ
     default_selector = "@a"
     selector_input = input(f"executeコマンドのセレクタ [{default_selector}]: ")
     selector = selector_input if selector_input else default_selector
 
-    # sequenceLoopExecの遅延秒数
     default_delay_seconds = 0.05
     while True:
         try:
@@ -29,13 +25,10 @@ def main():
         except ValueError:
             print("エラー: 正しい数値を入力してください。")
 
-    # --- 固定設定 ---
     config_path = "config.json"
     output_path = "output.txt"
 
     print("-----------------------------------------------------")
-
-    # --- 処理開始 ---
     print("処理を開始します...")
 
     # 1. 初期化
@@ -51,6 +44,7 @@ def main():
         return
 
     unmapped_sounds = set()
+    pitch_warnings = [] # 新規追加：ピッチ補正の警告を格納するリスト
 
     # 2. ファイル収集とソート
     try:
@@ -61,19 +55,16 @@ def main():
 
     mcfunction_files = []
     for filename in all_files:
-        # ファイル名が数字のみで構成され、.mcfunctionで終わるかチェック
         if filename.endswith('.mcfunction') and filename.split('.')[0].isdigit():
-            # 数値部分を整数として取得
             file_number = int(filename.split('.')[0])
             mcfunction_files.append((file_number, os.path.join(notes_dir, filename)))
 
-    # ファイル名の数値でソート
     mcfunction_files.sort()
 
     if not mcfunction_files:
         print(f"警告: '{notes_dir}' 内に処理対象の <数値>.mcfunction ファイルが見つかりませんでした。")
         with open(output_path, 'w', encoding='utf-8') as f:
-            f.write("") # 空のファイルを作成
+            f.write("")
         print(f"処理が完了しました。結果を {output_path} に出力しました。")
         return
         
@@ -86,6 +77,8 @@ def main():
     for file_number, file_path in mcfunction_files:
         max_file_number = max(max_file_number, file_number)
         elements = []
+        filename = os.path.basename(file_path)
+
         with open(file_path, 'r', encoding='utf-8') as f:
             for line in f.readlines():
                 line = line.strip()
@@ -93,34 +86,73 @@ def main():
                     continue
 
                 parts = line.split()
-                # parts: ["playsound", "<sound_id>", "record", "@s", "^0", "^", "^", "1", "<pitch>", "1"]
                 if len(parts) < 9:
                     continue
 
                 original_sound_id = parts[1]
-                pitch = parts[8]
+                pitch_str = parts[8]
 
-                # sound_idを変換
-                new_sound_id = sound_map.get(original_sound_id)
-                if new_sound_id is None:
+                try:
+                    original_pitch = float(pitch_str)
+                except ValueError:
+                    original_pitch = 1.0
+
+                # config.jsonからマッピング情報を取得
+                mapping_data = sound_map.get(original_sound_id)
+                new_sound_id = original_sound_id
+                pitch_multiplier = 1.0
+
+                if isinstance(mapping_data, str):
+                    # 従来の文字列での指定（倍率は1.0）
+                    new_sound_id = mapping_data
+                elif isinstance(mapping_data, dict):
+                    # 辞書型での指定（IDと倍率を取得）
+                    new_sound_id = mapping_data.get("id", original_sound_id)
+                    pitch_multiplier = mapping_data.get("pitch_multiplier", 1.0)
+                elif mapping_data is None:
                     unmapped_sounds.add(original_sound_id)
-                    new_sound_id = original_sound_id # 見つからなかった場合は元IDをそのまま使う
+
+                # ピッチの計算とオクターブ調整
+                calculated_pitch = original_pitch * pitch_multiplier
+                adjusted_pitch = calculated_pitch
+                octave_shifts = 0
+
+                # 2.0を超える場合は、0.5〜2.0に収まるまで半分（1オクターブ下げ）にする
+                while adjusted_pitch > 2.0:
+                    adjusted_pitch /= 2.0
+                    octave_shifts -= 1
+                
+                # 0.5未満の場合は、0.5〜2.0に収まるまで2倍（1オクターブ上げ）にする
+                # （※エラー回避のため、adjusted_pitchが0以下の場合は処理しない）
+                while adjusted_pitch < 0.5 and adjusted_pitch > 0:
+                    adjusted_pitch *= 2.0
+                    octave_shifts += 1
+
+                # 補正が行われた場合、警告リストに追加
+                if octave_shifts != 0:
+                    shift_dir = "下げ" if octave_shifts < 0 else "上げ"
+                    pitch_warnings.append(
+                        f"  - [{filename}] {original_sound_id}: 計算値 {calculated_pitch:.3f} -> {adjusted_pitch:.3f} に補正 ({abs(octave_shifts)}オクターブ{shift_dir})"
+                    )
+
+                # ピッチを文字列化（無駄な小数点の0を省く）
+                final_pitch_str = f"{adjusted_pitch:.3f}".rstrip('0').rstrip('.')
+                if final_pitch_str == "": 
+                    final_pitch_str = "0"
 
                 # elementを構築
-                element = f"execute {selector} ~ ~ ~ playsound {new_sound_id} @.p[r=2] ~ ~ ~ 1 {pitch} 1"
+                element = f"execute {selector} ~ ~ ~ playsound {new_sound_id} @.p[r=2] ~ ~ ~ 1 {final_pitch_str} 1"
                 elements.append(element)
 
         if elements:
             sequence = " & ".join(elements)
             all_sequences.append((file_number, f"sequencecommand 0 {sequence}"))
         else:
-            all_sequences.append((file_number, "")) # 空の場合は空白
+            all_sequences.append((file_number, ""))
 
     # 5. sequenceLoopExec の構築
-    # all_sequencesを辞書に変換して、番号で引けるようにする
     sequence_map = dict(all_sequences)
     final_sequence_parts = []
-    # 0から最大のファイル番号までループを回し、歯抜けの番号には空白を挿入する
     for i in range(max_file_number + 1):
         final_sequence_parts.append(sequence_map.get(i, ""))
 
@@ -133,12 +165,20 @@ def main():
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(final_command)
 
-    # 未マッピングのサウンドがあれば警告を表示
+    # --- 警告の表示 ---
+    if unmapped_sounds or pitch_warnings:
+        print("\n--- 警告・通知 ---")
+
     if unmapped_sounds:
-        print("\n--- 警告 ---")
-        print(f"以下のサウンドIDが '{config_path}' に見つかりませんでした。元のIDをそのまま使用しました:")
+        print(f"【未マッピング】以下のIDが '{config_path}' に見つかりませんでした:")
         for sound in sorted(list(unmapped_sounds)):
-            print(f"- {sound}")
+            print(f"  - {sound}")
+        print() # 空行
+
+    if pitch_warnings:
+        print("【ピッチ自動補正】一部のピッチが0.5〜2.0の範囲外だったため、オクターブ調整を行いました:")
+        for warning in pitch_warnings:
+            print(warning)
 
     print(f"\n処理が完了しました。結果を '{output_path}' に出力しました。")
 
